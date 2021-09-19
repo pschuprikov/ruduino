@@ -26,11 +26,6 @@ pub trait Timer16 : Sized {
     /// For example, TCCR0B.
     type ControlB: Register<T=u8>;
 
-    /// The third control register.
-    ///
-    /// For example, TCCR0C.
-    type ControlC: Register<T=u8>;
-
     /// The interrupt mask register.
     ///
     /// For example, TIMSK0.
@@ -148,7 +143,6 @@ impl WaveformGenerationMode {
 pub struct Timer16Setup<T: Timer16> {
     a: RegisterBits<T::ControlA>,
     b: RegisterBits<T::ControlB>,
-    c: RegisterBits<T::ControlC>,
     output_compare_1: Option<u16>,
     _phantom: marker::PhantomData<T>,
 }
@@ -159,7 +153,6 @@ impl<T: Timer16> Timer16Setup<T> {
         Timer16Setup {
             a: RegisterBits::zero(),
             b: RegisterBits::zero(),
-            c: RegisterBits::zero(),
             output_compare_1: None,
             _phantom: marker::PhantomData,
         }
@@ -195,7 +188,6 @@ impl<T: Timer16> Timer16Setup<T> {
     pub fn configure(self) {
         T::ControlA::write(self.a);
         T::ControlB::write(self.b);
-        T::ControlC::write(self.c);
 
         // Reset counter to zero
         T::Counter::write(0u16);

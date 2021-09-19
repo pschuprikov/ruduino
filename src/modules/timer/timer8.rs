@@ -3,28 +3,14 @@ use core::marker;
 
 /// A 8-bit timer.
 pub trait Timer8 : Sized {
-    /// The first compare register.
-    /// For example, OCR0A.
-    type CompareA: Register<T=u8>;
-
-    /// The second compare register.
-    /// For example, OCR0B.
-    type CompareB: Register<T=u8>;
+    type Compare: Register<T=u8>;
 
     /// The counter register.
     ///
     /// For example, TCNT0.
     type Counter: Register<T=u8>;
 
-    /// The first control register.
-    ///
-    /// For example, TCCR0A.
-    type ControlA: Register<T=u8>;
-
-    /// The second control register.
-    ///
-    /// For example, TCCR0B.
-    type ControlB: Register<T=u8>;
+    type Control: Register<T=u8>;
 
     /// The interrupt mask register.
     ///
@@ -37,21 +23,21 @@ pub trait Timer8 : Sized {
     type InterruptFlag: Register<T=u8>;
 
     /// Bit 0 of the clock select mask.
-    const CS0: RegisterBits<Self::ControlB>;
+    const CS0: RegisterBits<Self::Control>;
     /// Bit 1 of the clock select mask.
-    const CS1: RegisterBits<Self::ControlB>;
+    const CS1: RegisterBits<Self::Control>;
     /// Bit 2 of the clock select mask.
-    const CS2: RegisterBits<Self::ControlB>;
+    const CS2: RegisterBits<Self::Control>;
 
     /// Bit 0 of the waveform generation mode mask.
-    const WGM0: RegisterBits<Self::ControlA>;
+    const WGM0: RegisterBits<Self::Control>;
     /// Bit 1 of the waveform generation mode mask.
-    const WGM1: RegisterBits<Self::ControlA>;
+    const WGM1: RegisterBits<Self::Control>;
     /// Bit 2 of the waveform generation mode mask.
-    const WGM2: RegisterBits<Self::ControlB>;
+    const WGM2: RegisterBits<Self::Control>;
 
     /// Output compare interrupt enable flag.
-    const OCIEA: RegisterBits<Self::InterruptMask>;
+    const OCIE: RegisterBits<Self::InterruptMask>;
 }
 
 pub enum ClockSource {
@@ -66,7 +52,7 @@ pub enum ClockSource {
 }
 
 impl ClockSource {
-    fn bits<T: Timer8>(&self) -> RegisterBits<T::ControlB> {
+    fn bits<T: Timer8>(&self) -> RegisterBits<T::Control> {
         use self::ClockSource::*;
 
         match *self {
@@ -82,7 +68,7 @@ impl ClockSource {
     }
 
     #[inline]
-    fn mask<T: Timer8>() -> RegisterBits<T::ControlB> {
+    fn mask<T: Timer8>() -> RegisterBits<T::Control> {
         !(T::CS2 | T::CS1 | T::CS0)
     }
 }
@@ -99,36 +85,37 @@ pub enum WaveformGenerationMode {
 impl WaveformGenerationMode {
     /// Returns bits for TCCR0A, TCCR0B
     #[inline]
-    fn bits<T: Timer8>(&self) -> (RegisterBits<T::ControlA>, RegisterBits<T::ControlB>) {
-        use self::WaveformGenerationMode::*;
+    fn bits<T: Timer8>(&self) -> RegisterBits<T::Control> {
+        panic!("not implemented yet for atmega16")
+        //use self::WaveformGenerationMode::*;
 
-        // It makes more sense to return bytes (A,B), but the manual
-        // lists the table as (B,A). We match the manual here for
-        // inspection purposes and flip the values for sanity
-        // purposes.
-        let (b, a) = match *self {
-            Normal                         => (RegisterBits::zero(), RegisterBits::zero() | RegisterBits::zero()),
-            PwmPhaseCorrect                => (RegisterBits::zero(), RegisterBits::zero() | T::WGM0),
-            ClearOnTimerMatchOutputCompare => (RegisterBits::zero(), T::WGM1      | RegisterBits::zero()),
-            FastPwm                        => (RegisterBits::zero(), T::WGM1      | T::WGM0),
-            // Reserved                    => (T::WGM2,      RegisterBits::zero() | RegisterBits::zero()),
-            PwmPhaseCorrectOutputCompare   => (T::WGM2,      RegisterBits::zero() | T::WGM0),
-            // Reserved                    => (T::WGM2,      T::WGM1      | RegisterBits::zero())),
-            FastPwmOutputCompare           => (T::WGM2,      T::WGM1      | T::WGM0),
-        };
+        //// It makes more sense to return bytes (A,B), but the manual
+        //// lists the table as (B,A). We match the manual here for
+        //// inspection purposes and flip the values for sanity
+        //// purposes.
+        //let (b, a) = match *self {
+        //    Normal                         => (RegisterBits::zero(), RegisterBits::zero() | RegisterBits::zero()),
+        //    PwmPhaseCorrect                => (RegisterBits::zero(), RegisterBits::zero() | T::WGM0),
+        //    ClearOnTimerMatchOutputCompare => (RegisterBits::zero(), T::WGM1      | RegisterBits::zero()),
+        //    FastPwm                        => (RegisterBits::zero(), T::WGM1      | T::WGM0),
+        //    // Reserved                    => (T::WGM2,      RegisterBits::zero() | RegisterBits::zero()),
+        //    PwmPhaseCorrectOutputCompare   => (T::WGM2,      RegisterBits::zero() | T::WGM0),
+        //    // Reserved                    => (T::WGM2,      T::WGM1      | RegisterBits::zero())),
+        //    FastPwmOutputCompare           => (T::WGM2,      T::WGM1      | T::WGM0),
+        //};
 
-        (a, b)
+        //(a, b)
     }
 
     #[inline]
-    fn mask<T: Timer8>() -> (RegisterBits<T::ControlA>, RegisterBits<T::ControlB>) {
-        (!(T::WGM0 | T::WGM1), !(T::WGM2))
+    fn mask<T: Timer8>() -> RegisterBits<T::Control> {
+        panic!("not implemented yet for atmega16")
+        //(!(T::WGM0 | T::WGM1), !(T::WGM2))
     }
 }
 
 pub struct Timer8Setup<T: Timer8> {
-    a: RegisterBits<T::ControlA>,
-    b: RegisterBits<T::ControlB>,
+    a: RegisterBits<T::Control>,
     output_compare_1: Option<u8>,
     _phantom: marker::PhantomData<T>,
 }
@@ -138,7 +125,6 @@ impl<T: Timer8> Timer8Setup<T> {
     pub fn new() -> Self {
         Timer8Setup {
             a: RegisterBits::zero(),
-            b: RegisterBits::zero(),
             output_compare_1: None,
             _phantom: marker::PhantomData,
         }
@@ -146,20 +132,18 @@ impl<T: Timer8> Timer8Setup<T> {
 
     #[inline]
     pub fn clock_source(mut self, source: ClockSource) -> Self {
-        self.b &= ClockSource::mask::<T>();
-        self.b |= source.bits::<T>();
+        self.a &= ClockSource::mask::<T>();
+        self.a |= source.bits::<T>();
         self
     }
 
     #[inline]
     pub fn waveform_generation_mode(mut self, mode: WaveformGenerationMode) -> Self {
-        let (a, b) = WaveformGenerationMode::mask::<T>();
+        let a = WaveformGenerationMode::mask::<T>();
         self.a &= a;
-        self.b &= b;
 
-        let (a, b) = mode.bits::<T>();
+        let a = mode.bits::<T>();
         self.a |= a;
-        self.b |= b;
 
         self
     }
@@ -172,18 +156,17 @@ impl<T: Timer8> Timer8Setup<T> {
 
     #[inline]
     pub fn configure(self) {
-        T::ControlA::write(self.a);
-        T::ControlB::write(self.b);
+        T::Control::write(self.a);
 
         // Reset counter to zero
         T::Counter::write(0);
 
         if let Some(v) = self.output_compare_1 {
             // Set the match
-            T::CompareA::write(v);
+            T::Compare::write(v);
 
             // Enable compare interrupt
-            T::InterruptMask::set(T::OCIEA);
+            T::InterruptMask::set(T::OCIE);
         }
     }
 }

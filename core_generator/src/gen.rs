@@ -1,20 +1,33 @@
 use avr_mcu::*;
 use std::io;
+use std::collections::HashMap;
 use std::io::prelude::*;
 
 pub fn write_registers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
+    let mut registers = HashMap::<String, HashMap<String, Bitfield>>::new();
     for register in mcu.registers() {
-        let ty = if register.size == 1 { "u8" } else { "u16" };
+        if !registers.contains_key(&register.name) {
+            registers.insert(register.name.clone(), HashMap::new());
+            let ty = if register.size == 1 { "u8" } else { "u16" };
 
-        // HACK: Skip, atmeg328p pack defines two of these.
-        if register.name == "GTCCR" { continue; }
+            writeln!(w, "#[allow(non_camel_case_types)]")?;
+            writeln!(w, "pub struct {};", register.name)?;
+            writeln!(w)?;
 
-        writeln!(w, "#[allow(non_camel_case_types)]")?;
-        writeln!(w, "pub struct {};", register.name)?;
-        writeln!(w)?;
+            writeln!(w, "impl Register for {} {{", register.name)?;
+            writeln!(w, "    type T = {};", ty)?;
+            writeln!(w, "    const ADDRESS: *mut {} = 0x{:x} as *mut {};", ty, register.offset, ty)?;
+            writeln!(w, "}}")?;
+        }
 
-        writeln!(w, "impl {} {{", register.name)?;
-        for bitfield in register.bitfields.iter() {
+        for bitfield in &register.bitfields {
+            registers.get_mut(&register.name).unwrap().insert(bitfield.name.clone(), bitfield.clone());
+        }
+    }
+
+    for (register_name, bitfields) in registers {
+        writeln!(w, "impl {} {{", register_name)?;
+        for (_, bitfield) in bitfields {
             // Create a mask for the whole bitset.
             writeln!(w, "    pub const {}: RegisterBits<Self> = RegisterBits::new(0x{:x});", bitfield.name, bitfield.mask)?;
 
@@ -35,11 +48,6 @@ pub fn write_registers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
         }
         writeln!(w, "}}")?;
         writeln!(w)?;
-
-        writeln!(w, "impl Register for {} {{", register.name)?;
-        writeln!(w, "    type T = {};", ty)?;
-        writeln!(w, "    const ADDRESS: *mut {} = 0x{:x} as *mut {};", ty, register.offset, ty)?;
-        writeln!(w, "}}")?;
     }
 
     Ok(())
@@ -138,21 +146,21 @@ pub fn write_usarts(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
             writeln!(w, "/// The {} module.", usart.name)?;
             writeln!(w, "pub struct {};", usart.name)?;
             writeln!(w)?;
-            writeln!(w, "impl modules::HardwareUsart for {} {{", usart.name)?;
-            for register in usart.registers.iter() {
-                let reg_ty = if register.name.starts_with("UDR") { // the data register.
-                    "DataRegister".to_owned()
-                } else if register.name.starts_with("UCSR") { // one of the three control/status registers.
-                    let suffix = register.name.chars().rev().next().unwrap();
-                    format!("ControlRegister{}", suffix)
-                } else if register.name.starts_with("UBRR") { // the baud rate register.
-                    "BaudRateRegister".to_owned()
-                } else {
-                    panic!("unknown usart register '{}'", register.name);
-                };
-                writeln!(w, "    type {} = {};", reg_ty, register.name)?;
-            }
-            writeln!(w, "}}")?;
+            //writeln!(w, "impl modules::HardwareUsart for {} {{", usart.name)?;
+            //for register in usart.registers.iter() {
+            //    let reg_ty = if register.name.starts_with("UDR") { // the data register.
+            //        "DataRegister".to_owned()
+            //    } else if register.name.starts_with("UCSR") { // one of the three control/status registers.
+            //        let suffix = register.name.chars().rev().next().unwrap();
+            //        format!("ControlRegister{}", suffix)
+            //    } else if register.name.starts_with("UBRR") { // the baud rate register.
+            //        "BaudRateRegister".to_owned()
+            //    } else {
+            //        panic!("unknown usart register '{}'", register.name);
+            //    };
+            //    writeln!(w, "    type {} = {};", reg_ty, register.name)?;
+            //}
+            //writeln!(w, "}}")?;
             writeln!(w)?;
         }
     }
@@ -167,6 +175,9 @@ pub fn write_timers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
             tc.registers().find(|r| r.name.starts_with(name))
                 .expect(&format!("could not find '{}' register", name))
         };
+        let has_bf_suffix = |r: &Register, name: &'static str, suffix: &'static str| {
+            r.bitfields.iter().any(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
+        };
         let find_reg_suffix_optional = |name: &'static str, suffix: &'static str| {
             tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
         };
@@ -174,14 +185,14 @@ pub fn write_timers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
             find_reg_suffix_optional(name, suffix)
                 .expect(&format!("could not find '{}' register", name))
         };
-        let timer_number = find_reg("TIMSK").name.chars().last().unwrap()
+        let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
             .to_digit(10).unwrap();
 
         // TODO: At the moment, we do not support 8 bit timers that don't have two compare
         // registers.
-        let should_skip_timer = find_reg_suffix_optional("OCR", "B").is_none();
+        let has_two_compare_registers = find_reg_suffix_optional("OCR", "B").is_some();
 
-        if !should_skip_timer {
+        if has_two_compare_registers {
             writeln!(w, "/// 8-bit timer.")?;
             writeln!(w, "pub struct {};", TYPE_NAME)?;
             writeln!(w)?;
@@ -201,6 +212,30 @@ pub fn write_timers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
             writeln!(w, "    const WGM2: RegisterBits<Self::ControlB> = Self::ControlB::WGM020;")?;
             writeln!(w, "    const OCIEA: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
             writeln!(w, "}}")?;
+        } else {
+            let TIMSK = find_reg("TIMSK");
+
+            writeln!(w, "/// 8-bit timer.")?;
+            writeln!(w, "pub struct {};", TYPE_NAME)?;
+            writeln!(w)?;
+            writeln!(w, "impl modules::Timer8 for {} {{", TYPE_NAME)?;
+            writeln!(w, "    type Compare = {};", find_reg("OCR").name)?;
+            writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
+            writeln!(w, "    type Control = {};", find_reg("TCCR").name)?;
+            writeln!(w, "    type InterruptMask = {};", TIMSK.name)?;
+            writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
+            writeln!(w, "    const CS0: RegisterBits<Self::Control> = Self::Control::CS00;")?;
+            writeln!(w, "    const CS1: RegisterBits<Self::Control> = Self::Control::CS01;")?;
+            writeln!(w, "    const CS2: RegisterBits<Self::Control> = Self::Control::CS02;")?;
+            writeln!(w, "    const WGM0: RegisterBits<Self::Control> = Self::Control::WGM00;")?;
+            writeln!(w, "    const WGM1: RegisterBits<Self::Control> = Self::Control::WGM01;")?;
+            writeln!(w, "    const WGM2: RegisterBits<Self::Control> = Self::Control::WGM000;")?;
+            if has_bf_suffix(TIMSK, "OCIE", "A") {
+                writeln!(w, "    const OCIE: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
+            } else {
+                writeln!(w, "    const OCIE: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{};", timer_number)?;
+            }
+            writeln!(w, "}}")?;
         }
     }
 
@@ -215,7 +250,7 @@ pub fn write_timers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
             tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
                 .expect(&format!("could not find '{}' register", name))
         };
-        let timer_number = find_reg("TIMSK").name.chars().last().unwrap()
+        let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
             .to_digit(10).unwrap();
 
         writeln!(w, "/// 16-bit timer.")?;
@@ -227,7 +262,6 @@ pub fn write_timers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
         writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
         writeln!(w, "    type ControlA = {};", find_reg_suffix("TCCR", "A").name)?;
         writeln!(w, "    type ControlB = {};", find_reg_suffix("TCCR", "B").name)?;
-        writeln!(w, "    type ControlC = {};", find_reg_suffix("TCCR", "C").name)?;
         writeln!(w, "    type InterruptMask = {};", find_reg("TIMSK").name)?;
         writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
         writeln!(w, "    const CS0: RegisterBits<Self::ControlB> = Self::ControlB::CS10;")?;
