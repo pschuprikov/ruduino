@@ -91,7 +91,6 @@ const DISABLE_FOR_DEVICES: &'static [&'static str] = &[
     "attiny10",
     "attiny102",
     "attiny104",
-    "attiny13",
     "attiny13a",
     "attiny167",
     "attiny24",

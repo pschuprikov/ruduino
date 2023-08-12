@@ -27,22 +27,27 @@ pub fn write_registers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
 
     for (register_name, bitfields) in registers {
         writeln!(w, "impl {} {{", register_name)?;
-        for (_, bitfield) in bitfields {
+        for (_, bitfield) in &bitfields {
             // Create a mask for the whole bitset.
             writeln!(w, "    pub const {}: RegisterBits<Self> = RegisterBits::new(0x{:x});", bitfield.name, bitfield.mask)?;
 
             // We create masks for the individual bits in the field if there
             // is more than one bit in the field.
-            let mut current_mask = bitfield.mask;
-            let mut current_mask_bit_num = 0;
-            for current_register_bit_num in 0..15 {
-                if (current_mask & 0b1) == 0b1 {
-                    writeln!(w, "    pub const {}{}: RegisterBits<Self> = RegisterBits::new(1<<{});",
-                             bitfield.name, current_mask_bit_num, current_register_bit_num)?;
-                    current_mask_bit_num += 1;
-                }
+            if bitfield.mask.count_ones() > 1 {
+                let mut current_mask = bitfield.mask;
+                let mut current_mask_bit_num = 0;
+                for current_register_bit_num in 0..15 {
+                    if (current_mask & 0b1) == 0b1 {
+                        let bit_name = format!("{}{}", bitfield.name, current_mask_bit_num);
+                        if !bitfields.contains_key(&bit_name) {
+                            writeln!(w, "    pub const {}: RegisterBits<Self> = RegisterBits::new(1<<{});",
+                                     bit_name, current_register_bit_num)?;
+                        }
+                        current_mask_bit_num += 1;
+                    }
 
-                current_mask >>= 1;
+                    current_mask >>= 1;
+                }
             }
             writeln!(w)?;
         }
@@ -169,114 +174,150 @@ pub fn write_usarts(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
 
 pub fn write_timers(mcu: &Mcu, w: &mut dyn Write) -> Result<(), io::Error> {
     if let Some(tc) = mcu.module("TC8") { // Timer/Counter, 8-bit.
-        const TYPE_NAME: &'static str = "Timer8";
-
-        let find_reg = |name: &'static str| {
-            tc.registers().find(|r| r.name.starts_with(name))
-                .expect(&format!("could not find '{}' register", name))
-        };
-        let has_bf_suffix = |r: &Register, name: &'static str, suffix: &'static str| {
-            r.bitfields.iter().any(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
-        };
-        let find_reg_suffix_optional = |name: &'static str, suffix: &'static str| {
-            tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
-        };
-        let find_reg_suffix = |name: &'static str, suffix: &'static str| {
-            find_reg_suffix_optional(name, suffix)
-                .expect(&format!("could not find '{}' register", name))
-        };
-        let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
-            .to_digit(10).unwrap();
-
-        // TODO: At the moment, we do not support 8 bit timers that don't have two compare
-        // registers.
-        let has_two_compare_registers = find_reg_suffix_optional("OCR", "B").is_some();
-
-        if has_two_compare_registers {
-            writeln!(w, "/// 8-bit timer.")?;
-            writeln!(w, "pub struct {};", TYPE_NAME)?;
-            writeln!(w)?;
-            writeln!(w, "impl modules::Timer8 for {} {{", TYPE_NAME)?;
-            writeln!(w, "    type CompareA = {};", find_reg_suffix("OCR", "A").name)?;
-            writeln!(w, "    type CompareB = {};", find_reg_suffix("OCR", "B").name)?;
-            writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
-            writeln!(w, "    type ControlA = {};", find_reg_suffix("TCCR", "A").name)?;
-            writeln!(w, "    type ControlB = {};", find_reg_suffix("TCCR", "B").name)?;
-            writeln!(w, "    type InterruptMask = {};", find_reg("TIMSK").name)?;
-            writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
-            writeln!(w, "    const CS0: RegisterBits<Self::ControlB> = Self::ControlB::CS00;")?;
-            writeln!(w, "    const CS1: RegisterBits<Self::ControlB> = Self::ControlB::CS01;")?;
-            writeln!(w, "    const CS2: RegisterBits<Self::ControlB> = Self::ControlB::CS02;")?;
-            writeln!(w, "    const WGM0: RegisterBits<Self::ControlA> = Self::ControlA::WGM00;")?;
-            writeln!(w, "    const WGM1: RegisterBits<Self::ControlA> = Self::ControlA::WGM01;")?;
-            writeln!(w, "    const WGM2: RegisterBits<Self::ControlB> = Self::ControlB::WGM020;")?;
-            writeln!(w, "    const OCIEA: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
-            writeln!(w, "}}")?;
+        if is_double_output_compare(tc) {
+            write_timer8o2(tc, w);
         } else {
-            let TIMSK = find_reg("TIMSK");
-
-            writeln!(w, "/// 8-bit timer.")?;
-            writeln!(w, "pub struct {};", TYPE_NAME)?;
-            writeln!(w)?;
-            writeln!(w, "impl modules::Timer8 for {} {{", TYPE_NAME)?;
-            writeln!(w, "    type Compare = {};", find_reg("OCR").name)?;
-            writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
-            writeln!(w, "    type Control = {};", find_reg("TCCR").name)?;
-            writeln!(w, "    type InterruptMask = {};", TIMSK.name)?;
-            writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
-            writeln!(w, "    const CS0: RegisterBits<Self::Control> = Self::Control::CS00;")?;
-            writeln!(w, "    const CS1: RegisterBits<Self::Control> = Self::Control::CS01;")?;
-            writeln!(w, "    const CS2: RegisterBits<Self::Control> = Self::Control::CS02;")?;
-            writeln!(w, "    const WGM0: RegisterBits<Self::Control> = Self::Control::WGM00;")?;
-            writeln!(w, "    const WGM1: RegisterBits<Self::Control> = Self::Control::WGM01;")?;
-            writeln!(w, "    const WGM2: RegisterBits<Self::Control> = Self::Control::WGM000;")?;
-            if has_bf_suffix(TIMSK, "OCIE", "A") {
-                writeln!(w, "    const OCIE: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
-            } else {
-                writeln!(w, "    const OCIE: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{};", timer_number)?;
-            }
-            writeln!(w, "}}")?;
+            write_timer8(tc, w);
         }
     }
 
     if let Some(tc) = mcu.module("TC16") { // Timer/Counter, 16-bit.
-        const TYPE_NAME: &'static str = "Timer16";
-
-        let find_reg = |name: &'static str| {
-            tc.registers().find(|r| r.name.starts_with(name))
-                .expect(&format!("could not find '{}' register", name))
-        };
-        let find_reg_suffix = |name: &'static str, suffix: &'static str| {
-            tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
-                .expect(&format!("could not find '{}' register", name))
-        };
-        let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
-            .to_digit(10).unwrap();
-
-        writeln!(w, "/// 16-bit timer.")?;
-        writeln!(w, "pub struct {};", TYPE_NAME)?;
-        writeln!(w)?;
-        writeln!(w, "impl modules::Timer16 for {} {{", TYPE_NAME)?;
-        writeln!(w, "    type CompareA = {};", find_reg_suffix("OCR", "A").name)?;
-        writeln!(w, "    type CompareB = {};", find_reg_suffix("OCR", "B").name)?;
-        writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
-        writeln!(w, "    type ControlA = {};", find_reg_suffix("TCCR", "A").name)?;
-        writeln!(w, "    type ControlB = {};", find_reg_suffix("TCCR", "B").name)?;
-        writeln!(w, "    type InterruptMask = {};", find_reg("TIMSK").name)?;
-        writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
-        writeln!(w, "    const CS0: RegisterBits<Self::ControlB> = Self::ControlB::CS10;")?;
-        writeln!(w, "    const CS1: RegisterBits<Self::ControlB> = Self::ControlB::CS11;")?;
-        writeln!(w, "    const CS2: RegisterBits<Self::ControlB> = Self::ControlB::CS12;")?;
-        writeln!(w, "    const WGM0: RegisterBits<Self::ControlA> = Self::ControlA::WGM10;")?;
-        writeln!(w, "    const WGM1: RegisterBits<Self::ControlA> = Self::ControlA::WGM11;")?;
-        writeln!(w, "    const WGM2: RegisterBits<Self::ControlB> = Self::ControlB::WGM10;")?;
-        writeln!(w, "    const WGM3: RegisterBits<Self::ControlB> = Self::ControlB::WGM11;")?;
-        writeln!(w, "    const OCIEA: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
-        writeln!(w, "}}")?;
+        write_timer16(tc, w);
     }
 
     Ok(())
 }
+
+fn is_double_output_compare(tc: &Module) -> bool {
+    return tc.registers().filter(|r| r.name.starts_with("OCR")).count() > 1;
+}
+
+fn write_timer8(tc: &Module, w: &mut dyn Write) -> Result<(), io::Error> {
+    const TYPE_NAME: &'static str = "Timer8";
+
+    let find_reg = |name: &'static str| {
+        tc.registers().find(|r| r.name.starts_with(name))
+            .expect(&format!("could not find '{}' register", name))
+    };
+    let has_bf_suffix = |r: &Register, name: &'static str, suffix: &'static str| {
+        r.bitfields.iter().any(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
+    };
+    let find_reg_suffix = |name: &'static str, suffix: &'static str| {
+        tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
+            .expect(&format!("could not find '{}' register", name))
+    };
+    let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
+        .to_digit(10).unwrap();
+
+    let TIMSK = find_reg("TIMSK");
+
+    writeln!(w, "/// 8-bit timer.")?;
+    writeln!(w, "pub struct {};", TYPE_NAME)?;
+    writeln!(w)?;
+    writeln!(w, "impl modules::Timer8 for {} {{", TYPE_NAME)?;
+    writeln!(w, "    type Compare = {};", find_reg("OCR").name)?;
+    writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
+    writeln!(w, "    type Control = {};", find_reg("TCCR").name)?;
+    writeln!(w, "    type InterruptMask = {};", TIMSK.name)?;
+    writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
+    writeln!(w, "    const CS0: RegisterBits<Self::Control> = Self::Control::CS00;")?;
+    writeln!(w, "    const CS1: RegisterBits<Self::Control> = Self::Control::CS01;")?;
+    writeln!(w, "    const CS2: RegisterBits<Self::Control> = Self::Control::CS02;")?;
+    writeln!(w, "    const WGM0: RegisterBits<Self::Control> = Self::Control::WGM00;")?;
+    writeln!(w, "    const WGM1: RegisterBits<Self::Control> = Self::Control::WGM01;")?;
+    if has_bf_suffix(TIMSK, "OCIE", "A") {
+        writeln!(w, "    const OCIE: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
+    } else {
+        writeln!(w, "    const OCIE: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{};", timer_number)?;
+    }
+    writeln!(w, "}}")?;
+
+    Ok(())
+}
+
+fn write_timer8o2(tc: &Module, w: &mut dyn Write) -> Result<(), io::Error> {
+    const TYPE_NAME: &'static str = "Timer8";
+
+    let find_reg = |name: &'static str| {
+        tc.registers().find(|r| r.name.starts_with(name))
+            .expect(&format!("could not find '{}' register", name))
+    };
+    let has_bf_suffix = |r: &Register, name: &'static str, suffix: &'static str| {
+        r.bitfields.iter().any(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
+    };
+    let find_reg_suffix = |name: &'static str, suffix: &'static str| {
+        tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
+            .expect(&format!("could not find '{}' register", name))
+    };
+    let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
+        .to_digit(10).unwrap();
+
+    let TIMSK = find_reg("TIMSK");
+
+    writeln!(w, "/// 8-bit timer.")?;
+    writeln!(w, "pub struct {};", TYPE_NAME)?;
+    writeln!(w)?;
+    writeln!(w, "impl modules::Timer8O2 for {} {{", TYPE_NAME)?;
+    writeln!(w, "    type CompareA = {};", find_reg_suffix("OCR", "A").name)?;
+    writeln!(w, "    type CompareB = {};", find_reg_suffix("OCR", "B").name)?;
+    writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
+    writeln!(w, "    type ControlA = {};", find_reg_suffix("TCCR", "A").name)?;
+    writeln!(w, "    type ControlB = {};", find_reg_suffix("TCCR", "B").name)?;
+    writeln!(w, "    type InterruptMask = {};", TIMSK.name)?;
+    writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
+    writeln!(w, "    const CS0: RegisterBits<Self::ControlB> = Self::ControlB::CS00;")?;
+    writeln!(w, "    const CS1: RegisterBits<Self::ControlB> = Self::ControlB::CS01;")?;
+    writeln!(w, "    const CS2: RegisterBits<Self::ControlB> = Self::ControlB::CS02;")?;
+    writeln!(w, "    const WGM0: RegisterBits<Self::ControlA> = Self::ControlA::WGM00;")?;
+    writeln!(w, "    const WGM1: RegisterBits<Self::ControlA> = Self::ControlA::WGM01;")?;
+    writeln!(w, "    const WGM2: RegisterBits<Self::ControlB> = Self::ControlB::WGM02;")?;
+    writeln!(w, "    const OCIEA: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
+    writeln!(w, "    const OCIEB: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}B;", timer_number)?;
+    writeln!(w, "}}")?;
+
+    Ok(())
+}
+
+fn write_timer16(tc: &Module, w: &mut dyn Write) -> Result<(), io::Error> {
+    const TYPE_NAME: &'static str = "Timer16";
+
+    let find_reg = |name: &'static str| {
+        tc.registers().find(|r| r.name.starts_with(name))
+            .expect(&format!("could not find '{}' register", name))
+    };
+    let find_reg_suffix = |name: &'static str, suffix: &'static str| {
+        tc.registers().find(|r| r.name.starts_with(name) && r.name.ends_with(suffix))
+            .expect(&format!("could not find '{}' register", name))
+    };
+    let timer_number = tc.register_groups.first().unwrap().name.chars().last().unwrap()
+        .to_digit(10).unwrap();
+
+    writeln!(w, "/// 16-bit timer.")?;
+    writeln!(w, "pub struct {};", TYPE_NAME)?;
+    writeln!(w)?;
+    writeln!(w, "impl modules::Timer16 for {} {{", TYPE_NAME)?;
+    writeln!(w, "    type CompareA = {};", find_reg_suffix("OCR", "A").name)?;
+    writeln!(w, "    type CompareB = {};", find_reg_suffix("OCR", "B").name)?;
+    writeln!(w, "    type Counter = {};", find_reg("TCNT").name)?;
+    writeln!(w, "    type ControlA = {};", find_reg_suffix("TCCR", "A").name)?;
+    writeln!(w, "    type ControlB = {};", find_reg_suffix("TCCR", "B").name)?;
+    writeln!(w, "    type InterruptMask = {};", find_reg("TIMSK").name)?;
+    writeln!(w, "    type InterruptFlag = {};", find_reg("TIFR").name)?;
+    writeln!(w, "    const CS0: RegisterBits<Self::ControlB> = Self::ControlB::CS10;")?;
+    writeln!(w, "    const CS1: RegisterBits<Self::ControlB> = Self::ControlB::CS11;")?;
+    writeln!(w, "    const CS2: RegisterBits<Self::ControlB> = Self::ControlB::CS12;")?;
+    writeln!(w, "    const WGM0: RegisterBits<Self::ControlA> = Self::ControlA::WGM10;")?;
+    writeln!(w, "    const WGM1: RegisterBits<Self::ControlA> = Self::ControlA::WGM11;")?;
+    writeln!(w, "    const WGM2: RegisterBits<Self::ControlB> = Self::ControlB::WGM10;")?;
+    writeln!(w, "    const WGM3: RegisterBits<Self::ControlB> = Self::ControlB::WGM11;")?;
+    writeln!(w, "    const OCIEA: RegisterBits<Self::InterruptMask> = Self::InterruptMask::OCIE{}A;", timer_number)?;
+    writeln!(w, "}}")?;
+
+    Ok(())
+}
+
+
+
 
 /// Gets the name of a pin.
 fn pin_name(instance: &Instance, signal: &Signal) -> String {

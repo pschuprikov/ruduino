@@ -33,8 +33,6 @@ pub trait Timer8 : Sized {
     const WGM0: RegisterBits<Self::Control>;
     /// Bit 1 of the waveform generation mode mask.
     const WGM1: RegisterBits<Self::Control>;
-    /// Bit 2 of the waveform generation mode mask.
-    const WGM2: RegisterBits<Self::Control>;
 
     /// Output compare interrupt enable flag.
     const OCIE: RegisterBits<Self::InterruptMask>;
